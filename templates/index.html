@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local File Share</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    .box { border: 2px dashed #888; padding: 2rem; text-align: center; border-radius: 8px; margin: 1rem 0; cursor: pointer; }
+    .box.drag { background: #eef; border-color: #557; }
+    ul { list-style: none; padding: 0; }
+    li { display: flex; gap: 1rem; justify-content: space-between; align-items: center; padding: .7rem 0; border-bottom: 1px solid #eee; overflow-wrap: anywhere; }
+    button { cursor: pointer; }
+    .error { color: #b00; }
+    .muted { color: #666; font-size: .9rem; }
+    #status { min-height: 1.5em; }
+  </style>
+</head>
+<body>
+<h1>Local File Share</h1>
+<p class="muted">Локальный обмен файлами между устройствами в одной сети.</p>
+
+{% if not authed %}
+  <form id="login-form">
+    <label>PIN-код: <input id="pin" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label>
+    <button type="submit">Войти</button>
+    <span id="login-error" class="error" role="alert"></span>
+  </form>
+{% else %}
+  <div id="drop" class="box" tabindex="0" role="button" aria-label="Выбрать файлы или перетащить их сюда">
+    Перетащи файлы сюда или нажми, чтобы выбрать
+    <input id="file" type="file" multiple hidden>
+  </div>
+  <p id="status" role="status" aria-live="polite"></p>
+  <ul id="list"></ul>
+  <button id="logout" type="button">Выйти</button>
+{% endif %}
+
+<script>
+{% if not authed %}
+document.getElementById('login-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = new FormData();
+  form.append('pin', document.getElementById('pin').value);
+  const response = await fetch('/login', { method: 'POST', body: form });
+  if (response.ok) location.reload();
+  else document.getElementById('login-error').textContent = 'Неверный PIN или превышено число попыток';
+});
+{% else %}
+const drop = document.getElementById('drop');
+const input = document.getElementById('file');
+const list = document.getElementById('list');
+const status = document.getElementById('status');
+
+async function refresh() {
+  const response = await fetch('/api/files');
+  if (response.status === 401) return location.reload();
+  if (!response.ok) { status.textContent = 'Не удалось получить список файлов'; return; }
+
+  const files = await response.json();
+  list.replaceChildren();
+  for (const file of files) {
+    const item = document.createElement('li');
+    const link = document.createElement('a');
+    link.href = `/api/download/${encodeURIComponent(file.id)}`;
+    link.textContent = file.name;
+
+    const details = document.createElement('span');
+    details.textContent = `${(file.size / 1024).toFixed(1)} KB `;
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'Удалить';
+    remove.addEventListener('click', async () => {
+      const result = await fetch(`/api/files/${encodeURIComponent(file.id)}`, { method: 'DELETE' });
+      if (result.ok) refresh();
+      else status.textContent = 'Не удалось удалить файл';
+    });
+
+    const actions = document.createElement('span');
+    actions.append(details, remove);
+    item.append(link, actions);
+    list.append(item);
+  }
+}
+
+async function uploadFiles(files) {
+  for (const file of files) {
+    const data = new FormData();
+    data.append('file', file);
+    status.textContent = `Загрузка: ${file.name}`;
+    const response = await fetch('/api/upload', { method: 'POST', body: data });
+    if (!response.ok) {
+      let message = 'ошибка загрузки';
+      try { message = (await response.json()).detail || message; } catch (_) {}
+      status.textContent = `${file.name}: ${message}`;
+      continue;
+    }
+  }
+  status.textContent = 'Загрузка завершена';
+  input.value = '';
+  await refresh();
+}
+
+drop.addEventListener('click', () => input.click());
+drop.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); input.click(); }
+});
+input.addEventListener('change', () => uploadFiles(input.files));
+['dragover', 'dragenter'].forEach(name => drop.addEventListener(name, event => {
+  event.preventDefault(); drop.classList.add('drag');
+}));
+['dragleave', 'drop'].forEach(name => drop.addEventListener(name, event => {
+  event.preventDefault(); drop.classList.remove('drag');
+}));
+drop.addEventListener('drop', event => uploadFiles(event.dataTransfer.files));
+
+document.getElementById('logout').addEventListener('click', async () => {
+  await fetch('/logout', { method: 'POST' });
+  location.reload();
+});
+
+refresh();
+{% endif %}
+</script>
+</body>
+</html>
